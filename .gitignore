@@ -11,3 +11,4 @@ dist/
 build/
 test_*.py
 *.log
+IMPLEMENTATION_SUMMARY.md
