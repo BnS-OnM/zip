@@ -246,8 +246,9 @@ async def import_products_from_excel(
             odoo_error = str(e)
             logger.warning(f"Odoo import skipped: {odoo_error}")
         except Exception as e:
+            # Unexpected error during Odoo import - log but continue since catalog was loaded
             odoo_error = str(e)
-            logger.error(f"Odoo import failed: {odoo_error}")
+            logger.error(f"Odoo import failed with unexpected error: {odoo_error}", exc_info=True)
         
         # Build response
         response = {
@@ -266,6 +267,7 @@ async def import_products_from_excel(
         elif odoo_error:
             response["odoo_import"] = {
                 "success": False,
+                "error": odoo_error,
                 "message": "Odoo import overgeslagen (configuratie ontbreekt of fout opgetreden)"
             }
         
