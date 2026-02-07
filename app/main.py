@@ -1,7 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, Request, Form
+from fastapi import FastAPI, UploadFile, File, Request, Form, Query
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
-from typing import Optional
+from typing import Optional, List, Dict
+from pathlib import Path
 import os
 import logging
 
@@ -165,6 +166,126 @@ async def health():
     Healthcheck voor Railway / Render
     """
     return {"status": "ok"}
+
+
+def list_directory_recursive(path: Path, max_depth: int = 10, current_depth: int = 0) -> Dict:
+    """
+    Recursively list directory contents similar to 'ls -R'.
+    
+    Args:
+        path: Path to the directory to list
+        max_depth: Maximum recursion depth to prevent infinite loops
+        current_depth: Current recursion depth (used internally)
+    
+    Returns:
+        Dictionary containing directory structure with files and subdirectories
+    """
+    if current_depth >= max_depth:
+        return {"error": "Maximum depth reached"}
+    
+    if not path.exists():
+        return {"error": "Path does not exist"}
+    
+    if not path.is_dir():
+        return {"error": "Path is not a directory"}
+    
+    result = {
+        "path": str(path),
+        "type": "directory",
+        "contents": []
+    }
+    
+    try:
+        # List all items in the directory
+        for item in sorted(path.iterdir()):
+            item_info = {
+                "name": item.name,
+                "path": str(item),
+                "type": "directory" if item.is_dir() else "file"
+            }
+            
+            # Add file size for files
+            if item.is_file():
+                try:
+                    item_info["size"] = item.stat().st_size
+                except (OSError, PermissionError):
+                    item_info["size"] = None
+            
+            # Recursively list subdirectories
+            if item.is_dir():
+                try:
+                    subdirectory_contents = list_directory_recursive(
+                        item, 
+                        max_depth=max_depth, 
+                        current_depth=current_depth + 1
+                    )
+                    item_info["contents"] = subdirectory_contents.get("contents", [])
+                except PermissionError:
+                    item_info["error"] = "Permission denied"
+            
+            result["contents"].append(item_info)
+            
+    except PermissionError:
+        result["error"] = "Permission denied"
+    
+    return result
+
+
+@app.get("/list-directory")
+async def list_directory(
+    path: str = Query(default=".", description="Path to list (relative or absolute)"),
+    max_depth: int = Query(default=10, ge=1, le=20, description="Maximum recursion depth")
+):
+    """
+    List directory contents recursively (similar to 'ls -R' command).
+    
+    Query parameters:
+    - path: Directory path to list (defaults to current directory)
+    - max_depth: Maximum recursion depth (1-20, defaults to 10)
+    
+    Returns:
+    - JSON structure with recursive directory listing
+    """
+    try:
+        # Resolve the path
+        target_path = Path(path).resolve()
+        
+        # Security check: Ensure we're not accessing sensitive system directories
+        # For a production system, you might want to restrict to a specific base directory
+        sensitive_paths = ["/etc", "/sys", "/proc", "/dev", "/root"]
+        for sensitive in sensitive_paths:
+            if str(target_path).startswith(sensitive):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "Access to system directories is forbidden",
+                        "path": str(target_path)
+                    }
+                )
+        
+        # Perform the recursive listing
+        result = list_directory_recursive(target_path, max_depth=max_depth)
+        
+        if "error" in result and result.get("contents") is None:
+            return JSONResponse(
+                status_code=400,
+                content=result
+            )
+        
+        return JSONResponse(
+            status_code=200,
+            content=result
+        )
+        
+    except Exception as e:
+        logger.error(f"Error listing directory: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Failed to list directory",
+                "detail": str(e)
+            }
+        )
 
 
 @app.post("/import-products")
