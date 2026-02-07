@@ -3,6 +3,8 @@ Module for importing data from Excel files to Odoo.
 Handles Product (product.template) and Sale Order (sale.order) Excel files.
 """
 import openpyxl
+import pandas as pd
+import re
 from io import BytesIO
 from typing import List, Dict, Any, Optional
 import logging
@@ -12,6 +14,9 @@ logging.basicConfig(level=logging.INFO)
 
 # Constants
 DEFAULT_VAT_PERCENT = 21  # Default VAT rate for Belgium
+
+# Module-level product catalog storage
+_PRODUCT_CATALOG: List[Dict[str, Any]] = []
 
 
 def parse_product_xlsx(xlsx_bytes: bytes) -> List[Dict[str, Any]]:
@@ -211,3 +216,181 @@ def parse_sale_order_xlsx(xlsx_bytes: bytes) -> Dict[str, Any]:
         raise
     
     return order_data
+
+
+# =====================================================================
+# PRODUCT CATALOG FUNCTIONS
+# =====================================================================
+
+def _normalize_for_search(s: str) -> str:
+    """
+    Normalize string for search matching.
+    Lowercase, convert non-alphanumeric to space, collapse whitespace.
+    
+    Args:
+        s: String to normalize
+        
+    Returns:
+        Normalized string
+    """
+    if not s:
+        return ""
+    s = str(s).lower()
+    s = re.sub(r'[^a-z0-9]+', ' ', s)
+    return ' '.join(s.split())
+
+
+def _collapse_whitespace(s: str) -> str:
+    """
+    Remove all whitespace, dots, dashes, underscores, and slashes.
+    Used for collapsed search matching.
+    
+    Args:
+        s: String to collapse
+        
+    Returns:
+        Collapsed string
+    """
+    if not s:
+        return ""
+    return re.sub(r'[\s\.\-_/]+', '', str(s))
+
+
+def load_product_catalog_to_state(xlsx_bytes: bytes) -> List[Dict[str, Any]]:
+    """
+    Load product catalog from Excel file into module-level state.
+    
+    Expected columns (flexible matching):
+    - name / Product / Naam (fallback: first column)
+    - description / omschrijving / beschrijving / internal notes (fallback: name)
+    - list_price (prefer exact), or first column with "prijs"
+    - default_code / internal reference / sku (optional)
+    
+    Args:
+        xlsx_bytes: Bytes content of the Excel file
+        
+    Returns:
+        List of product dictionaries loaded into catalog
+    """
+    global _PRODUCT_CATALOG
+    
+    try:
+        # Use pandas for flexible column detection
+        df = pd.read_excel(BytesIO(xlsx_bytes))
+        
+        # Log original columns
+        logger.info(f"Product catalog columns: {list(df.columns)}")
+        
+        # Normalize column names for matching
+        col_lower = {col.lower().strip(): col for col in df.columns}
+        
+        # Find name column
+        name_col = None
+        for key in ['name', 'product', 'naam']:
+            if key in col_lower:
+                name_col = col_lower[key]
+                break
+        if not name_col:
+            # Fallback to first column
+            name_col = df.columns[0]
+        
+        # Find description column
+        desc_col = None
+        for key in ['description', 'omschrijving', 'beschrijving', 'internal notes']:
+            if key in col_lower:
+                desc_col = col_lower[key]
+                break
+        if not desc_col:
+            # Fallback to name column
+            desc_col = name_col
+        
+        # Find price column
+        price_col = None
+        if 'list_price' in col_lower:
+            price_col = col_lower['list_price']
+        else:
+            # Find first column containing "prijs"
+            for col in df.columns:
+                if 'prijs' in col.lower():
+                    price_col = col
+                    break
+        
+        # Find default_code column (optional)
+        code_col = None
+        for key in ['default_code', 'internal reference', 'sku', 'artikelnr']:
+            if key in col_lower:
+                code_col = col_lower[key]
+                break
+        
+        logger.info(f"Column mapping: name={name_col}, description={desc_col}, price={price_col}, code={code_col}")
+        
+        # Build catalog
+        catalog = []
+        for idx, row in df.iterrows():
+            # Skip empty rows
+            if pd.isna(row[name_col]) or not str(row[name_col]).strip():
+                continue
+            
+            name = str(row[name_col]).strip()
+            description = str(row[desc_col]).strip() if not pd.isna(row[desc_col]) else name
+            
+            # Parse price
+            price = 0.0
+            if price_col and not pd.isna(row[price_col]):
+                try:
+                    price = float(row[price_col])
+                except (ValueError, TypeError):
+                    price = 0.0
+            
+            # Parse code
+            code = ""
+            if code_col and not pd.isna(row[code_col]):
+                code = str(row[code_col]).strip()
+            
+            # Build search strings
+            search_parts = [name, description]
+            if code:
+                search_parts.append(code)
+            
+            search_text = " ".join(search_parts)
+            search_normalized = _normalize_for_search(search_text)
+            search_collapsed = _collapse_whitespace(search_normalized)
+            
+            catalog.append({
+                "name": name,
+                "description": description,
+                "list_price": price,
+                "default_code": code,
+                "_search": search_normalized,
+                "_search_collapse": search_collapsed
+            })
+        
+        # Update global catalog
+        _PRODUCT_CATALOG = catalog
+        
+        logger.info(f"Loaded {len(catalog)} products into catalog")
+        
+        return catalog
+        
+    except Exception as e:
+        logger.error(f"Error loading product catalog: {str(e)}")
+        raise
+
+
+def get_product_catalog() -> List[Dict[str, Any]]:
+    """
+    Get the current product catalog from module-level state.
+    
+    Returns:
+        List of product dictionaries in catalog
+    """
+    return _PRODUCT_CATALOG
+
+
+def clear_product_catalog() -> None:
+    """
+    Clear the product catalog from module-level state.
+    """
+    global _PRODUCT_CATALOG
+    _PRODUCT_CATALOG = []
+    logger.info("Product catalog cleared")
