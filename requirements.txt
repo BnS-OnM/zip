@@ -7,3 +7,4 @@ openai
 jinja2
 pdfplumber
 openpyxl
+pandas

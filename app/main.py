@@ -9,7 +9,7 @@ from app.pdf_to_xlsx import facq_pdf_to_xlsx, facq_pdf_to_xlsx_and_data
 from app.pdf_detector import detect_pdf_type, PDFType
 from app.pdf_epb_to_odoo import epb_pdf_to_xlsx_and_data
 from app.odoo import create_quotation_from_xlsx_data, import_products_from_data
-from app.xlsx_import import parse_product_xlsx, parse_sale_order_xlsx
+from app.xlsx_import import parse_product_xlsx, parse_sale_order_xlsx, load_product_catalog_to_state, get_product_catalog
 from app.logging_middleware import StructuredLoggingMiddleware
 
 # Configure logging
@@ -57,7 +57,28 @@ async def upload_pdf_to_xlsx(file: UploadFile = File(...)):
     pdf_bytes = await file.read()
 
     try:
-        xlsx_file = facq_pdf_to_xlsx(pdf_bytes)
+        # Detect PDF type
+        pdf_type = detect_pdf_type(pdf_bytes)
+        logger.info(f"Detected PDF type: {pdf_type.value}")
+        
+        # Check if catalog is required and loaded
+        if pdf_type == PDFType.EPB_VOORSTEL:
+            catalog = get_product_catalog()
+            if not catalog:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "Importeer eerst products via /import-products",
+                        "detail": "EPB PDFs vereisen een productcatalogus voor matching"
+                    }
+                )
+        
+        # Use appropriate converter based on PDF type
+        if pdf_type == PDFType.EPB_VOORSTEL:
+            xlsx_file, _ = epb_pdf_to_xlsx_and_data(pdf_bytes)
+        else:
+            xlsx_file = facq_pdf_to_xlsx(pdf_bytes)
+            
     except Exception as e:
         return {
             "error": "Conversie mislukt",
@@ -94,6 +115,18 @@ async def upload_pdf_and_import_to_odoo(
         # Detect PDF type
         pdf_type = detect_pdf_type(pdf_bytes)
         logger.info(f"Detected PDF type: {pdf_type.value}")
+        
+        # Check if catalog is required and loaded
+        if pdf_type == PDFType.EPB_VOORSTEL:
+            catalog = get_product_catalog()
+            if not catalog:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "Importeer eerst products via /import-products",
+                        "detail": "EPB PDFs vereisen een productcatalogus voor matching"
+                    }
+                )
         
         # Use appropriate converter based on PDF type
         if pdf_type == PDFType.EPB_VOORSTEL:
@@ -173,6 +206,7 @@ async def import_products_from_excel(
 ):
     """
     Import products from Product (product.template).xlsx file into Odoo.
+    Also loads the catalog into in-memory state for EPB PDF matching.
     
     Expected Excel format:
     - Column headers in first row
@@ -187,7 +221,10 @@ async def import_products_from_excel(
     xlsx_bytes = await file.read()
     
     try:
-        # Parse product data from Excel
+        # Load product catalog into memory state
+        catalog = load_product_catalog_to_state(xlsx_bytes)
+        
+        # Parse product data from Excel (for Odoo import)
         products_data = parse_product_xlsx(xlsx_bytes)
         
         if not products_data:
@@ -199,27 +236,44 @@ async def import_products_from_excel(
                 }
             )
         
-        # Import products to Odoo
-        stats = import_products_from_data(products_data)
+        # Try to import products to Odoo (optional, may fail if Odoo not configured)
+        odoo_stats = None
+        odoo_error = None
+        try:
+            odoo_stats = import_products_from_data(products_data)
+        except ValueError as e:
+            # Odoo configuration error - continue without Odoo import
+            odoo_error = str(e)
+            logger.warning(f"Odoo import skipped: {odoo_error}")
+        except Exception as e:
+            odoo_error = str(e)
+            logger.error(f"Odoo import failed: {odoo_error}")
+        
+        # Build response
+        response = {
+            "success": True,
+            "catalog_loaded": len(catalog),
+            "message": f"Productcatalogus geladen: {len(catalog)} producten in geheugen"
+        }
+        
+        if odoo_stats:
+            response["odoo_import"] = {
+                "success": True,
+                "created": odoo_stats['created'],
+                "updated": odoo_stats['updated'],
+                "message": f"Producten geïmporteerd: {odoo_stats['created']} aangemaakt, {odoo_stats['updated']} bijgewerkt"
+            }
+        elif odoo_error:
+            response["odoo_import"] = {
+                "success": False,
+                "message": "Odoo import overgeslagen (configuratie ontbreekt of fout opgetreden)"
+            }
         
         return JSONResponse(
             status_code=200,
-            content={
-                "success": True,
-                "message": f"Producten geïmporteerd: {stats['created']} aangemaakt, {stats['updated']} bijgewerkt",
-                "stats": stats
-            }
+            content=response
         )
         
-    except ValueError as e:
-        # Odoo configuration error
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Odoo configuratie ontbreekt",
-                "detail": str(e)
-            }
-        )
     except Exception as e:
         # Other errors
         return JSONResponse(
