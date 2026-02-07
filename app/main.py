@@ -180,20 +180,23 @@ def list_directory_recursive(path: Path, max_depth: int = 10, current_depth: int
     Returns:
         Dictionary containing directory structure with files and subdirectories
     """
-    if current_depth >= max_depth:
-        return {"error": "Maximum depth reached"}
-    
-    if not path.exists():
-        return {"error": "Path does not exist"}
-    
-    if not path.is_dir():
-        return {"error": "Path is not a directory"}
-    
     result = {
         "path": str(path),
         "type": "directory",
         "contents": []
     }
+    
+    if current_depth >= max_depth:
+        result["error"] = "Maximum depth reached"
+        return result
+    
+    if not path.exists():
+        result["error"] = "Path does not exist"
+        return result
+    
+    if not path.is_dir():
+        result["error"] = "Path is not a directory"
+        return result
     
     try:
         # List all items in the directory
@@ -214,14 +217,18 @@ def list_directory_recursive(path: Path, max_depth: int = 10, current_depth: int
             # Recursively list subdirectories
             if item.is_dir():
                 try:
-                    subdirectory_contents = list_directory_recursive(
+                    subdirectory_result = list_directory_recursive(
                         item, 
                         max_depth=max_depth, 
                         current_depth=current_depth + 1
                     )
-                    item_info["contents"] = subdirectory_contents.get("contents", [])
+                    item_info["contents"] = subdirectory_result.get("contents", [])
+                    # Preserve error information from subdirectories
+                    if "error" in subdirectory_result:
+                        item_info["error"] = subdirectory_result["error"]
                 except PermissionError:
                     item_info["error"] = "Permission denied"
+                    item_info["contents"] = []
             
             result["contents"].append(item_info)
             
@@ -252,21 +259,35 @@ async def list_directory(
         
         # Security check: Ensure we're not accessing sensitive system directories
         # For a production system, you might want to restrict to a specific base directory
-        sensitive_paths = ["/etc", "/sys", "/proc", "/dev", "/root"]
+        sensitive_paths = [Path("/etc"), Path("/sys"), Path("/proc"), Path("/dev"), Path("/root")]
         for sensitive in sensitive_paths:
-            if str(target_path).startswith(sensitive):
-                return JSONResponse(
-                    status_code=403,
-                    content={
-                        "error": "Access to system directories is forbidden",
-                        "path": str(target_path)
-                    }
-                )
+            try:
+                # Use is_relative_to for proper path checking (Python 3.9+)
+                if target_path.is_relative_to(sensitive):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": "Access to system directories is forbidden",
+                            "path": str(target_path)
+                        }
+                    )
+            except (ValueError, AttributeError):
+                # Fallback for Python < 3.9 or if is_relative_to is not available
+                # Use resolved paths for comparison
+                if str(target_path).startswith(str(sensitive.resolve()) + "/") or str(target_path) == str(sensitive.resolve()):
+                    return JSONResponse(
+                        status_code=403,
+                        content={
+                            "error": "Access to system directories is forbidden",
+                            "path": str(target_path)
+                        }
+                    )
         
         # Perform the recursive listing
         result = list_directory_recursive(target_path, max_depth=max_depth)
         
-        if "error" in result and result.get("contents") is None:
+        # Check if there's an error at the root level (no contents listed)
+        if "error" in result and len(result.get("contents", [])) == 0:
             return JSONResponse(
                 status_code=400,
                 content=result
