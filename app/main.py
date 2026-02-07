@@ -4,6 +4,7 @@ from fastapi.templating import Jinja2Templates
 from typing import Optional, List, Dict
 from pathlib import Path
 import os
+import stat
 import logging
 
 from app.pdf_to_xlsx import facq_pdf_to_xlsx, facq_pdf_to_xlsx_and_data
@@ -201,21 +202,34 @@ def list_directory_recursive(path: Path, max_depth: int = 10, current_depth: int
     try:
         # List all items in the directory
         for item in sorted(path.iterdir()):
+            try:
+                # Get stat info once to avoid redundant system calls
+                stat_info = item.stat()
+                is_dir = stat.S_ISDIR(stat_info.st_mode)
+                is_file = stat.S_ISREG(stat_info.st_mode)
+            except (OSError, PermissionError):
+                # If we can't stat, try basic checks
+                is_dir = item.is_dir()
+                is_file = item.is_file()
+                stat_info = None
+            
             item_info = {
                 "name": item.name,
                 "path": str(item),
-                "type": "directory" if item.is_dir() else "file"
+                "type": "directory" if is_dir else "file"
             }
             
             # Add file size for files
-            if item.is_file():
+            if is_file and stat_info:
+                item_info["size"] = stat_info.st_size
+            elif is_file:
                 try:
                     item_info["size"] = item.stat().st_size
                 except (OSError, PermissionError):
                     item_info["size"] = None
             
             # Recursively list subdirectories
-            if item.is_dir():
+            if is_dir:
                 try:
                     subdirectory_result = list_directory_recursive(
                         item, 
