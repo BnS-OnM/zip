@@ -128,6 +128,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ### Other
 - `GET /health` - Health check
+- `GET /list-directory` - List directory contents recursively (similar to `ls -R`)
 
 ## Usage
 
@@ -215,3 +216,53 @@ curl -X POST "http://localhost:8000/import-sale-order" \
 - If a product with the matching `default_code` is found, a product line is created with the `product_id` set
 - If no matching product is found, a description-only line is created with the product code and description
 - This ensures proper product tracking and inventory management in Odoo
+
+## Directory Listing
+
+The API provides a recursive directory listing endpoint that mimics the Unix `ls -R` command.
+
+### Listing Directories Recursively
+
+**Endpoint:** `GET /list-directory`
+
+**Query Parameters:**
+- `path` (optional): Directory path to list, can be relative or absolute (default: current directory `.`)
+- `max_depth` (optional): Maximum recursion depth, 1-20 (default: 10)
+
+**Example Usage:**
+
+List current directory:
+```bash
+curl "http://localhost:8000/list-directory"
+```
+
+List a specific directory with depth limit:
+```bash
+curl "http://localhost:8000/list-directory?path=/home/runner/work/zip/zip&max_depth=2"
+```
+
+**Response Format:**
+```json
+{
+  "path": "/path/to/directory",
+  "type": "directory",
+  "contents": [
+    {
+      "name": "file.txt",
+      "path": "/path/to/directory/file.txt",
+      "type": "file",
+      "size": 1234
+    },
+    {
+      "name": "subdirectory",
+      "path": "/path/to/directory/subdirectory",
+      "type": "directory",
+      "contents": []
+    }
+  ]
+}
+```
+
+**Security:**
+- Access to sensitive system directories (`/etc`, `/sys`, `/proc`, `/dev`, `/root`) is blocked
+- Maximum depth is limited to 20 to prevent performance issues
