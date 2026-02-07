@@ -38,4 +38,11 @@ Thumbs.db
 
 # Temporary files
 *.tmp
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+test_*.py
 *.log

@@ -1,11 +1,13 @@
-# FACQ Converter Odoo
+# FACQ/EPB Converter Odoo
 
-Convert FACQ PDF invoices to XLSX format and optionally import them as quotations into Odoo.
+Convert FACQ and EPB/Vaillant installation proposal PDFs to XLSX format and optionally import them as quotations into Odoo.
 Also supports direct import of products and sale orders from Excel files.
 
 ## Features
 
-- **PDF to XLSX Conversion**: Upload a FACQ PDF and download it as an Excel file
+- **PDF to XLSX Conversion**: Upload a FACQ or EPB PDF and download it as an Excel file
+- **Automatic PDF Type Detection**: Detects whether PDF is FACQ invoice or EPB installation proposal
+- **Product Catalog Matching**: EPB PDFs are matched against a product catalog for accurate pricing
 - **Odoo Integration**: Automatically import the converted data as a new quotation in Odoo's sales module
 - **Excel Import**: Import products and sale orders directly from Excel files to Odoo
 - **Product Linking**: Automatically link sale order lines to existing products in Odoo by product code
@@ -14,6 +16,68 @@ Also supports direct import of products and sale orders from Excel files.
   2. Download XLSX + Import to Odoo (new functionality)
   3. Import products from Excel to Odoo
   4. Import sale orders from Excel to Odoo with automatic product linking
+
+## EPB/Vaillant PDF Processing (New)
+
+The system now supports EPB (Energieprestatie Berekening) installation proposal PDFs from Vaillant:
+
+### How It Works
+
+1. **Load Product Catalog**: First, import your product catalog via `/import-products` endpoint
+2. **Upload EPB PDF**: The system will:
+   - Detect that it's an EPB proposal (not FACQ)
+   - Extract main components (aroTHERM, VWL modules, uniSTOR, etc.)
+   - Parse the Legend section for additional items
+   - Filter out indicators (1a, 2b, etc.) and section headings
+   - Match items to your product catalog using smart keyword matching
+   - Generate Odoo Sales XLSX with proper columns and pricing
+
+### EPB Features
+
+- **Smart Parsing**: 
+  - Extracts main Vaillant components (aroTHERM, Hydraulic modules, uniSTOR, VRC controllers)
+  - Parses Legend section while filtering noise (indicators like "1a", "2b", headings)
+  - Preserves real items like pumps, valves, vessels, sensors
+
+- **Product Matching**:
+  - Matches items to catalog using keyword/synonym mapping
+  - Handles NL/EN variations (pump/pomp, valve/klep, etc.)
+  - Supports product code variations (VWL 8.2 AS, vwl8.2as, etc.)
+  - Token-based fallback matching for unlisted items
+
+- **Deduplication**:
+  - Removes duplicate products, summing quantities
+  - Ensures clean output with unique product lines
+
+- **Output Format**:
+  - Generates proper Odoo Sales XLSX with 6 columns:
+    1. Orderreferentie (Order Reference)
+    2. Partner ID
+    3. Product (Product Name from catalog)
+    4. Product omschrijving (Description)
+    5. Aantal (Quantity)
+    6. Prijs (Price from catalog)
+
+### EPB Usage Example
+
+```bash
+# Step 1: Import product catalog
+curl -X POST "http://localhost:8000/import-products" \
+  -F "file=@product_catalog.xlsx"
+
+# Response: {"success": true, "catalog_loaded": 150, "message": "..."}
+
+# Step 2: Upload EPB PDF for conversion
+curl -X POST "http://localhost:8000/upload-xlsx" \
+  -F "file=@epb_installation_proposal.pdf" \
+  -o output.xlsx
+
+# Or upload and import to Odoo
+curl -X POST "http://localhost:8000/upload-and-import" \
+  -F "file=@epb_installation_proposal.pdf" \
+  -F "customer_name=Klant Naam" \
+  -o output.xlsx
+```
 
 ## Setup
 
@@ -88,18 +152,42 @@ When using the Odoo import feature, a new quotation will be created in your Odoo
 Import products from an Excel file with the following structure:
 
 **Product (product.template).xlsx format:**
-- Column headers: `ArtikelNr`, `Naam`, `Verkoopprijs`, `Kostprijs`, `Type`
+- Required columns: Product name column (name/Product/Naam), Price column (list_price or any column with "prijs")
+- Optional columns: description/omschrijving, default_code/artikelnr/SKU
+- The system automatically detects column names (flexible matching)
 - Example:
   ```
-  ArtikelNr | Naam              | Verkoopprijs | Kostprijs | Type
-  12345     | Product A - Kraan | 150.50       | 100.00    | product
-  67890     | Product B - Wasbak| 250.00       | 180.00    | product
+  name                          | description              | list_price | default_code
+  aroTHERM Split plus VWL 8.2 AS| Heat pump aroTHERM       | 2500.00    | VWL-82-AS
+  Hydraulic module VWL 8.2 IS   | Hydraulic module         | 800.00     | VWL-82-IS
+  Circulation pump              | Pump for heating circuit | 150.00     | PUMP-001
+  3-port mixing valve           | Mixing valve 3-port      | 180.00     | VALVE-001
   ```
+
+**For EPB PDFs:**
+- The product catalog is loaded into memory and used for matching EPB items
+- Products are matched using smart keyword/synonym mapping
+- Unmatched items are included with price 0
 
 **API Call:**
 ```bash
 curl -X POST "http://localhost:8000/import-products" \
   -F "file=@Product (product.template).xlsx"
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "catalog_loaded": 150,
+  "message": "Productcatalogus geladen: 150 producten in geheugen",
+  "odoo_import": {
+    "success": true,
+    "created": 10,
+    "updated": 140,
+    "message": "Producten geïmporteerd: 10 aangemaakt, 140 bijgewerkt"
+  }
+}
 ```
 
 ### Importing Sale Orders
