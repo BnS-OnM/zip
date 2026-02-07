@@ -74,8 +74,10 @@ def parse_legend_blocks(text: str) -> List[str]:
         
         # Keep items with actual content
         if re.search(r"[a-z0-9]{2,}", l):
-            # Remove bullet points and numbering
-            l2 = re.sub(r"^(•|\-|\*|\d+[a-z]*[\)\.\-\s])+", "", l).strip()
+            # Remove bullet points and indicator numbering at start
+            # Be careful not to remove numbers that are part of the product name (like "3-port")
+            # Only remove patterns like "1a ", "2b. ", "3c) " at the beginning
+            l2 = re.sub(r"^(?:•|\-|\*|\d+[a-z][\)\.\s])+", "", l).strip()
             if l2 and len(l2) > 2:
                 filtered_items.append(l2)
     
